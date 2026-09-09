@@ -1,5 +1,5 @@
 {
-  "version": "0.3.1",
+  "version": "0.4.0",
   "repository": "https://github.com/MOX-Studio/ai-harness",
   "baseline": {
     "rules": "AGENTS.md",

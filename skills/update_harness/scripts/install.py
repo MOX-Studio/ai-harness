@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the catalog's shared instructions and skills without touching personal config."""
+"""Install shared Codex instructions and skills without touching personal config."""
 
 import argparse
 import json
@@ -106,44 +106,37 @@ def validate_parent(target):
             raise ValueError(f"Parent path is a broken symlink: {parent}")
 
 
-def plan_install(repo, agent, home, block, skills):
+def plan_install(home, block, skills):
     """Validate every destination before performing any writes."""
     user_home = Path(home).expanduser().resolve() if home is not None else Path.home()
     codex_home = user_home / ".codex"
     if home is None and os.environ.get("CODEX_HOME"):
         codex_home = Path(os.environ["CODEX_HOME"]).expanduser().resolve()
-    adapters = {
-        "codex": (codex_home / "AGENTS.md", user_home / ".agents" / "skills"),
-        "claude": (user_home / ".claude" / "CLAUDE.md", user_home / ".claude" / "skills"),
-    }
-    actions = []
-    for name in ("codex", "claude") if agent == "all" else (agent,):
-        instructions, skill_home = adapters[name]
-        if name == "codex":
-            override = codex_home / "AGENTS.override.md"
-            if override.exists() and (not override.is_file() or override.read_bytes()):
-                raise ValueError(f"Nonempty {override} takes precedence over AGENTS.md. Reconcile the override manually before installing shared rules.")
-        validate_parent(instructions)
-        if instructions.is_symlink():
-            raise ValueError(f"Refusing symlink instruction file: {instructions}")
-        if instructions.exists() and not instructions.is_file():
-            raise ValueError(f"Instruction path is not a regular file: {instructions}")
-        existing = instructions.read_bytes() if instructions.exists() else b""
-        expected = merge_rules(existing, block, instructions)
-        actions.append(("rules", instructions, expected, instructions.exists() and existing == expected))
-        for source in skills:
-            destination = skill_home / source.name
-            validate_parent(destination)
-            current = destination.is_symlink() and destination.resolve() == source
-            if (destination.exists() or destination.is_symlink()) and not current:
-                raise ValueError(f"Skill destination already belongs to another installation: {destination}")
-            actions.append(("skill", destination, source, current))
+    instructions = codex_home / "AGENTS.md"
+    skill_home = user_home / ".agents" / "skills"
+    override = codex_home / "AGENTS.override.md"
+    if override.exists() and (not override.is_file() or override.read_bytes()):
+        raise ValueError(f"Nonempty {override} takes precedence over AGENTS.md. Reconcile the override manually before installing shared rules.")
+    validate_parent(instructions)
+    if instructions.is_symlink():
+        raise ValueError(f"Refusing symlink instruction file: {instructions}")
+    if instructions.exists() and not instructions.is_file():
+        raise ValueError(f"Instruction path is not a regular file: {instructions}")
+    existing = instructions.read_bytes() if instructions.exists() else b""
+    expected = merge_rules(existing, block, instructions)
+    actions = [("rules", instructions, expected, instructions.exists() and existing == expected)]
+    for source in skills:
+        destination = skill_home / source.name
+        validate_parent(destination)
+        current = destination.is_symlink() and destination.resolve() == source
+        if (destination.exists() or destination.is_symlink()) and not current:
+            raise ValueError(f"Skill destination already belongs to another installation: {destination}")
+        actions.append(("skill", destination, source, current))
     return actions
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--agent", required=True, choices=("codex", "claude", "all"))
     parser.add_argument("--home", help="Use an isolated user home; ignores CODEX_HOME")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
@@ -152,7 +145,7 @@ def main(argv=None):
     repo = Path(__file__).resolve().parents[3]
     try:
         version, block, skills = load_baseline(repo)
-        actions = plan_install(repo, args.agent, args.home, block, skills)
+        actions = plan_install(args.home, block, skills)
         print(f"Source: {repo}\nCatalog version: {version}")
         for skill_home in sorted({destination.parent for kind, destination, _, _ in actions if kind == "skill"}):
             legacy = skill_home / "company-sync"
@@ -173,7 +166,7 @@ def main(argv=None):
             else:
                 destination.symlink_to(expected, target_is_directory=True)
             print(f"UPDATED {destination}")
-        print("Keep the source clone on disk. Start a new agent session after installation or updates.")
+        print("Keep the source clone on disk. A new Codex session is required to load updates.")
         return 1 if args.check and changes else 0
     except (OSError, ValueError) as error:
         print(f"Error: {error}", file=sys.stderr)

@@ -1,24 +1,23 @@
 # Notion MCP
 
-[Официальная инструкция](https://developers.notion.com/guides/mcp/get-started-with-mcp).
+[Документация](https://developers.notion.com/guides/mcp/get-started-with-mcp).
 
-Сначала проверьте `get`. Добавляйте только отсутствующий сервер; другой адрес не заменяйте.
-
-## Codex
+1. Проверь сервер:
 
 ```sh
 codex mcp get notion
+```
+
+2. Если отсутствует — добавь. При другом адресе сохрани конфигурацию и сообщи конфликт.
+
+```sh
 codex mcp add notion --url https://mcp.notion.com/mcp
+```
+
+3. Если нужен OAuth — запусти вход, который завершает пользователь:
+
+```sh
 codex mcp login notion
 ```
 
-## Claude Code
-
-```sh
-claude mcp get notion
-claude mcp add --transport http --scope user notion https://mcp.notion.com/mcp
-```
-
-Вход: `/mcp` в Claude Code. Используйте личный аккаунт.
-
-После подключения проверьте инструменты Notion. Если задана страница — проверьте её чтение. Отсутствие доступа укажите отдельно.
+Проверь инструменты Notion. Если задана страница — проверь чтение. Отсутствие доступа укажи отдельно.
