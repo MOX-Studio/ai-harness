@@ -1,9 +1,11 @@
 {
-  "version": "0.1.0",
-  "repository": "https://github.com/MOX-Studio/company-ai",
+  "version": "0.2.0",
+  "repository": "https://github.com/MOX-Studio/ai-harness",
   "baseline": {
     "rules": "rules/common.md",
-    "skills": ["skills/company-sync"]
+    "skills": [
+      "skills/update_harness"
+    ]
   },
   "projects": [
     {
@@ -18,7 +20,9 @@
     {
       "id": "notion",
       "instructions": "mcp/notion.md",
-      "projects": ["mox-adv"],
+      "projects": [
+        "mox-adv"
+      ],
       "url": "https://mcp.notion.com/mcp",
       "authentication": "personal-oauth",
       "alternative": "Reuse an existing working Notion connector or notion-axi with a personal NOTION_API_TOKEN."

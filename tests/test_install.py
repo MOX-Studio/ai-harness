@@ -13,8 +13,10 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "install.py"
-BEGIN = b"<!-- company-ai:begin -->"
-END = b"<!-- company-ai:end -->"
+BEGIN = b"<!-- ai-harness:begin -->"
+END = b"<!-- ai-harness:end -->"
+LEGACY_BEGIN = b"<!-- company-ai:begin -->"
+LEGACY_END = b"<!-- company-ai:end -->"
 
 
 class InstallerTests(unittest.TestCase):
@@ -29,12 +31,12 @@ class InstallerTests(unittest.TestCase):
         (self.repo / "rules").mkdir()
         self.rules = "# Общие инструкции\nПроверяй результат.\n".encode("utf-8")
         (self.repo / "rules" / "common.md").write_bytes(self.rules)
-        self.skill = self.repo / "skills" / "company-sync"
+        self.skill = self.repo / "skills" / "update_harness"
         self.skill.mkdir(parents=True)
-        (self.skill / "SKILL.md").write_text("---\nname: company-sync\n---\nSync the catalog.\n", encoding="utf-8")
+        (self.skill / "SKILL.md").write_text("---\nname: update_harness\n---\nSync the catalog.\n", encoding="utf-8")
         self.catalog = {
             "version": "0.1.0",
-            "baseline": {"rules": "rules/common.md", "skills": ["skills/company-sync"]},
+            "baseline": {"rules": "rules/common.md", "skills": ["skills/update_harness"]},
             "mcp": [], "plugins": [], "settings": [], "projects": [],
         }
         self.save_catalog()
@@ -68,8 +70,8 @@ class InstallerTests(unittest.TestCase):
             self.assertIn(str(self.repo).encode(), content)
             self.assertEqual(content.count(BEGIN), 1)
         for parent in (self.home / ".agents" / "skills", self.home / ".claude" / "skills"):
-            self.assertTrue((parent / "company-sync").is_symlink())
-            self.assertEqual((parent / "company-sync" / "SKILL.md").read_bytes(), (self.skill / "SKILL.md").read_bytes())
+            self.assertTrue((parent / "update_harness").is_symlink())
+            self.assertEqual((parent / "update_harness" / "SKILL.md").read_bytes(), (self.skill / "SKILL.md").read_bytes())
             self.assertFalse((parent / "unselected").exists())
         result = self.run_install()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -90,6 +92,39 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(content[content.index(END) + len(END):], suffix)
             self.assertIn(self.rules, content)
             self.assertNotIn(b"Old shared rules", content)
+
+    def test_legacy_block_migrates_in_place_and_keeps_historical_skill_links(self):
+        prefix = b"Personal before\r\n\xff\r\n"
+        suffix = b"\r\nPersonal after\r\n\xfe"
+        original = prefix + LEGACY_BEGIN + b"\r\nOld shared rules\r\n" + LEGACY_END + suffix
+        for path in self.instruction_paths():
+            path.parent.mkdir(parents=True)
+            path.write_bytes(original)
+        legacy_links = [parent / "company-sync" for parent in (
+            self.home / ".agents" / "skills", self.home / ".claude" / "skills",
+        )]
+        legacy_source = self.root / "previous clone" / "skills" / "company-sync"
+        for link in legacy_links:
+            link.parent.mkdir(parents=True)
+            link.symlink_to(legacy_source, target_is_directory=True)
+        self.assertEqual(self.run_install("--check").returncode, 1)
+        self.assertEqual(self.run_install("--dry-run").returncode, 0)
+        self.assertEqual([path.read_bytes() for path in self.instruction_paths()], [original, original])
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path in self.instruction_paths():
+            content = path.read_bytes()
+            self.assertEqual(content[:content.index(BEGIN)], prefix)
+            self.assertEqual(content[content.index(END) + len(END):], suffix)
+            self.assertEqual(content.count(BEGIN), 1)
+            self.assertNotIn(b"<!-- company-ai:", content)
+            self.assertIn(self.rules, content)
+        for link in legacy_links:
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.readlink(), legacy_source)
+            self.assertIn(f"PRESERVED LEGACY SKILL {link}", result.stdout)
+            self.assertTrue((link.parent / "update_harness").is_symlink())
+        self.assertEqual(self.run_install("--check").returncode, 0)
 
     def test_dry_run_and_check_never_write_and_report_drift(self):
         preview = self.run_install("--dry-run")
@@ -112,7 +147,7 @@ class InstallerTests(unittest.TestCase):
         instructions = self.instruction_paths()[0]
         instructions.parent.mkdir(parents=True)
         instructions.write_bytes(b"Personal without trailing newline")
-        collision = self.home / ".claude" / "skills" / "company-sync"
+        collision = self.home / ".claude" / "skills" / "update_harness"
         collision.mkdir(parents=True)
         (collision / "personal.txt").write_bytes(b"mine")
         result = self.run_install()
@@ -127,7 +162,12 @@ class InstallerTests(unittest.TestCase):
             BEGIN + b"\nmissing end", END + b"\n" + BEGIN,
             BEGIN + b"\nx\n" + END + b"\n" + BEGIN + b"\ny\n" + END,
             b"inline " + BEGIN + b"\nx\n" + END,
-            b"<!-- company-ai:begin ->\nIncomplete marker",
+            b"<!-- ai-harness:begin ->\nIncomplete marker",
+            b"<!-- company-ai:begin ->\nIncomplete legacy marker",
+            LEGACY_BEGIN + b"\nx\n" + LEGACY_END + b"\n" + LEGACY_BEGIN + b"\ny\n" + LEGACY_END,
+            LEGACY_BEGIN + b"\nx\n" + LEGACY_END + b"\n" + BEGIN + b"\ny\n" + END,
+            LEGACY_BEGIN + b"\nx\n" + END,
+            BEGIN + b"\nx\n" + LEGACY_END,
         )
         target = self.instruction_paths()[1]
         target.parent.mkdir(parents=True)
@@ -163,7 +203,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(outside.read_bytes(), b"Untouched")
         self.assertFalse(self.instruction_paths()[1].exists())
         target.unlink()
-        collision = self.home / ".agents" / "skills" / "company-sync"
+        collision = self.home / ".agents" / "skills" / "update_harness"
         collision.parent.mkdir(parents=True)
         collision.symlink_to(self.root / "missing skill")
         self.assertEqual(self.run_install().returncode, 2)
@@ -195,7 +235,7 @@ class InstallerTests(unittest.TestCase):
             normal = module.plan_install(self.repo, "all", None, block, skills)
             overridden = module.plan_install(self.repo, "all", str(self.home), block, skills)
         self.assertEqual(normal[0][1], custom / "AGENTS.md")
-        self.assertEqual(normal[1][1], self.home / ".agents" / "skills" / "company-sync")
+        self.assertEqual(normal[1][1], self.home / ".agents" / "skills" / "update_harness")
         self.assertEqual(overridden[0][1], self.home / ".codex" / "AGENTS.md")
         self.assertEqual(normal[2][1], self.home / ".claude" / "CLAUDE.md")
 

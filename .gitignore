@@ -8,6 +8,6 @@ __pycache__/
 *.local.*
 local/
 personal/
-.company-ai-state/
+.ai-harness-state/
 *.pem
 *.key

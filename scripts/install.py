@@ -8,8 +8,12 @@ from pathlib import Path
 import sys
 
 
-BEGIN = b"<!-- company-ai:begin -->"
-END = b"<!-- company-ai:end -->"
+BEGIN = b"<!-- ai-harness:begin -->"
+END = b"<!-- ai-harness:end -->"
+MARKER_SETS = (
+    (b"<!-- ai-harness:", BEGIN, END),
+    (b"<!-- company-ai:", b"<!-- company-ai:begin -->", b"<!-- company-ai:end -->"),
+)
 
 
 def source_path(repo, value):
@@ -39,7 +43,7 @@ def load_baseline(repo):
         raise ValueError(f"Rules file is missing: {rules_path}")
     rules = rules_path.read_bytes()
     rules.decode("utf-8")
-    if BEGIN in rules or END in rules:
+    if any(prefix in rules for prefix, _, _ in MARKER_SETS):
         raise ValueError("Source rules must not contain installer markers")
     entries = baseline.get("skills")
     if not isinstance(entries, list):
@@ -67,22 +71,29 @@ def load_baseline(repo):
 
 
 def merge_rules(existing, block, target):
-    begin_count, end_count = existing.count(BEGIN), existing.count(END)
-    if existing.count(b"<!-- company-ai:") != begin_count + end_count:
-        raise ValueError(f"Malformed company-ai marker: {target}")
-    if begin_count == end_count == 0:
+    present = []
+    for prefix, begin, end in MARKER_SETS:
+        begin_count, end_count = existing.count(begin), existing.count(end)
+        if existing.count(prefix) != begin_count + end_count:
+            raise ValueError(f"Malformed managed marker: {target}")
+        if begin_count or end_count:
+            if begin_count != 1 or end_count != 1:
+                raise ValueError(f"Malformed or duplicate managed markers: {target}")
+            present.append((begin, end))
+    if not present:
         separator = b"\n\n" if existing and not existing.endswith(b"\n") else b"\n" if existing else b""
         return existing + separator + block + b"\n"
-    if begin_count != 1 or end_count != 1:
-        raise ValueError(f"Malformed or duplicate company-ai markers: {target}")
-    start, end = existing.index(BEGIN), existing.index(END)
-    for position, marker in ((start, BEGIN), (end, END)):
+    if len(present) != 1:
+        raise ValueError(f"Mixed ai-harness and company-ai markers: {target}")
+    begin_marker, end_marker = present[0]
+    start, end = existing.index(begin_marker), existing.index(end_marker)
+    for position, marker in ((start, begin_marker), (end, end_marker)):
         tail = existing[position + len(marker):]
         if (position and existing[position - 1:position] != b"\n") or (tail and not tail.startswith((b"\n", b"\r\n"))):
             raise ValueError(f"Markers must be on separate lines: {target}")
     if start >= end:
-        raise ValueError(f"Reversed company-ai markers: {target}")
-    return existing[:start] + block + existing[end + len(END):]
+        raise ValueError(f"Reversed managed markers: {target}")
+    return existing[:start] + block + existing[end + len(end_marker):]
 
 
 def validate_parent(target):
@@ -143,6 +154,10 @@ def main(argv=None):
         version, block, skills = load_baseline(repo)
         actions = plan_install(repo, args.agent, args.home, block, skills)
         print(f"Source: {repo}\nCatalog version: {version}")
+        for skill_home in sorted({destination.parent for kind, destination, _, _ in actions if kind == "skill"}):
+            legacy = skill_home / "company-sync"
+            if legacy.is_symlink():
+                print(f"PRESERVED LEGACY SKILL {legacy}; review its source manually.")
         changes = False
         for kind, destination, expected, current in actions:
             if current:
