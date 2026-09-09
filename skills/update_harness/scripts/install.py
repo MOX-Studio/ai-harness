@@ -149,7 +149,7 @@ def main(argv=None):
     mode.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
     mode.add_argument("--check", action="store_true", help="Exit 1 if shared instructions or skill links need updating")
     args = parser.parse_args(argv)
-    repo = Path(__file__).resolve().parent.parent
+    repo = Path(__file__).resolve().parents[3]
     try:
         version, block, skills = load_baseline(repo)
         actions = plan_install(repo, args.agent, args.home, block, skills)

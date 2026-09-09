@@ -26,27 +26,26 @@ class InstallerTests(unittest.TestCase):
         self.root = Path(self.temporary.name).resolve()
         self.repo = self.root / "source clone"
         self.home = self.root / "isolated home"
-        (self.repo / "scripts").mkdir(parents=True)
-        shutil.copyfile(SCRIPT, self.repo / "scripts" / "install.py")
-        (self.repo / "rules").mkdir()
-        self.rules = "# Общие инструкции\nПроверяй результат.\n".encode("utf-8")
-        (self.repo / "rules" / "common.md").write_bytes(self.rules)
         self.skill = self.repo / "skills" / "update_harness"
-        self.skill.mkdir(parents=True)
+        self.script = self.skill / "scripts" / "install.py"
+        self.script.parent.mkdir(parents=True)
+        shutil.copyfile(SCRIPT, self.script)
+        self.rules = "# Общие инструкции\nПроверяй результат.\n".encode("utf-8")
+        (self.repo / "AGENTS.md").write_bytes(self.rules)
         (self.skill / "SKILL.md").write_text("---\nname: update_harness\n---\nSync the catalog.\n", encoding="utf-8")
         self.catalog = {
-            "version": "0.1.0",
-            "baseline": {"rules": "rules/common.md", "skills": ["skills/update_harness"]},
-            "mcp": [], "plugins": [], "settings": [], "projects": [],
+            "version": "0.3.0",
+            "baseline": {"rules": "AGENTS.md", "skills": ["skills/update_harness"]},
+            "mcp": [], "plugins": [],
         }
         self.save_catalog()
 
     def save_catalog(self):
         (self.repo / "catalog.json").write_text(json.dumps(self.catalog), encoding="utf-8")
 
-    def run_install(self, *args):
+    def run_install(self, *args, script=None):
         return subprocess.run(
-            [sys.executable, str(self.repo / "scripts" / "install.py"), "--agent", "all", "--home", str(self.home), *args],
+            [sys.executable, str(script or self.script), "--agent", "all", "--home", str(self.home), *args],
             capture_output=True, text=True, check=False,
         )
 
@@ -73,7 +72,8 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue((parent / "update_harness").is_symlink())
             self.assertEqual((parent / "update_harness" / "SKILL.md").read_bytes(), (self.skill / "SKILL.md").read_bytes())
             self.assertFalse((parent / "unselected").exists())
-        result = self.run_install()
+        installed_script = self.home / ".agents" / "skills" / "update_harness" / "scripts" / "install.py"
+        result = self.run_install(script=installed_script)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(first, [path.read_bytes() for path in self.instruction_paths()])
         self.assertNotIn("UPDATED", result.stdout)
@@ -134,11 +134,11 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 1, missing.stderr)
         self.assertFalse(self.home.exists())
         self.assertIn(str(self.repo), missing.stdout)
-        self.assertIn("0.1.0", missing.stdout)
+        self.assertIn("0.3.0", missing.stdout)
         self.assertEqual(self.run_install().returncode, 0)
         self.assertEqual(self.run_install("--check").returncode, 0)
         original = [path.read_bytes() for path in self.instruction_paths()]
-        (self.repo / "rules" / "common.md").write_bytes(self.rules + b"New rule.\n")
+        (self.repo / "AGENTS.md").write_bytes(self.rules + b"New rule.\n")
         self.assertEqual(self.run_install("--check").returncode, 1)
         self.assertEqual(self.run_install("--dry-run").returncode, 0)
         self.assertEqual(original, [path.read_bytes() for path in self.instruction_paths()])
@@ -211,14 +211,14 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(target.exists())
 
     def test_catalog_rejects_unsafe_and_missing_sources_without_writes(self):
-        for value in ("../outside.md", "/tmp/outside.md", "rules/missing.md"):
+        for value in ("../outside.md", "/tmp/outside.md", "missing.md"):
             with self.subTest(value=value):
                 self.catalog["baseline"]["rules"] = value
                 self.save_catalog()
                 self.assertEqual(self.run_install().returncode, 2)
                 self.assertFalse(self.home.exists())
-        self.catalog["baseline"]["rules"] = "rules/common.md"
-        for value in ("rules", "skills/missing", "skills/../../outside"):
+        self.catalog["baseline"]["rules"] = "AGENTS.md"
+        for value in ("AGENTS.md", "skills/missing", "skills/../../outside"):
             with self.subTest(value=value):
                 self.catalog["baseline"]["skills"] = [value]
                 self.save_catalog()
