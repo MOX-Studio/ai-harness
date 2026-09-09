@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Install the catalog's shared instructions and skills without touching personal config."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+
+
+BEGIN = b"<!-- company-ai:begin -->"
+END = b"<!-- company-ai:end -->"
+
+
+def source_path(repo, value):
+    if not isinstance(value, str) or not value:
+        raise ValueError("Catalog paths must be nonempty strings")
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"Unsafe catalog path: {value}")
+    path = (repo / relative).resolve()
+    if not path.is_relative_to(repo):
+        raise ValueError(f"Catalog path escapes the repository: {value}")
+    return path
+
+
+def load_baseline(repo):
+    catalog = json.loads((repo / "catalog.json").read_text(encoding="utf-8"))
+    if not isinstance(catalog, dict):
+        raise ValueError("catalog.json must contain an object")
+    version = catalog.get("version")
+    baseline = catalog.get("baseline")
+    if not isinstance(version, str) or not version.strip() or "\n" in version or "\r" in version:
+        raise ValueError("Catalog version must be a nonempty, single-line string")
+    if not isinstance(baseline, dict):
+        raise ValueError("Catalog baseline must contain rules and skills")
+    rules_path = source_path(repo, baseline.get("rules"))
+    if not rules_path.is_file():
+        raise ValueError(f"Rules file is missing: {rules_path}")
+    rules = rules_path.read_bytes()
+    rules.decode("utf-8")
+    if BEGIN in rules or END in rules:
+        raise ValueError("Source rules must not contain installer markers")
+    entries = baseline.get("skills")
+    if not isinstance(entries, list):
+        raise ValueError("Catalog baseline.skills must be a list")
+    skills = []
+    names = set()
+    for entry in entries:
+        path = source_path(repo, entry)
+        if len(Path(entry).parts) != 2 or Path(entry).parts[0] != "skills":
+            raise ValueError(f"Skill must be an immediate child of skills/: {entry}")
+        if not path.is_relative_to(repo / "skills") or not path.is_dir():
+            raise ValueError(f"Invalid skill directory: {entry}")
+        definition = path / "SKILL.md"
+        if not definition.is_file() or not definition.resolve().is_relative_to(repo):
+            raise ValueError(f"Skill must contain a local SKILL.md: {entry}")
+        if path.name in names:
+            raise ValueError(f"Duplicate skill name: {path.name}")
+        names.add(path.name)
+        skills.append(path)
+    metadata = f"Источник общих правил: `{repo}`\nВерсия каталога: `{version}`\n\n".encode("utf-8")
+    block = BEGIN + b"\n" + metadata + rules
+    if not block.endswith(b"\n"):
+        block += b"\n"
+    return version, block + END, skills
+
+
+def merge_rules(existing, block, target):
+    begin_count, end_count = existing.count(BEGIN), existing.count(END)
+    if existing.count(b"<!-- company-ai:") != begin_count + end_count:
+        raise ValueError(f"Malformed company-ai marker: {target}")
+    if begin_count == end_count == 0:
+        separator = b"\n\n" if existing and not existing.endswith(b"\n") else b"\n" if existing else b""
+        return existing + separator + block + b"\n"
+    if begin_count != 1 or end_count != 1:
+        raise ValueError(f"Malformed or duplicate company-ai markers: {target}")
+    start, end = existing.index(BEGIN), existing.index(END)
+    for position, marker in ((start, BEGIN), (end, END)):
+        tail = existing[position + len(marker):]
+        if (position and existing[position - 1:position] != b"\n") or (tail and not tail.startswith((b"\n", b"\r\n"))):
+            raise ValueError(f"Markers must be on separate lines: {target}")
+    if start >= end:
+        raise ValueError(f"Reversed company-ai markers: {target}")
+    return existing[:start] + block + existing[end + len(END):]
+
+
+def validate_parent(target):
+    for parent in target.parents:
+        if parent.exists():
+            if not parent.is_dir():
+                raise ValueError(f"Parent path is not a directory: {parent}")
+            return
+        if parent.is_symlink():
+            raise ValueError(f"Parent path is a broken symlink: {parent}")
+
+
+def plan_install(repo, agent, home, block, skills):
+    """Validate every destination before performing any writes."""
+    user_home = Path(home).expanduser().resolve() if home is not None else Path.home()
+    codex_home = user_home / ".codex"
+    if home is None and os.environ.get("CODEX_HOME"):
+        codex_home = Path(os.environ["CODEX_HOME"]).expanduser().resolve()
+    adapters = {
+        "codex": (codex_home / "AGENTS.md", user_home / ".agents" / "skills"),
+        "claude": (user_home / ".claude" / "CLAUDE.md", user_home / ".claude" / "skills"),
+    }
+    actions = []
+    for name in ("codex", "claude") if agent == "all" else (agent,):
+        instructions, skill_home = adapters[name]
+        if name == "codex":
+            override = codex_home / "AGENTS.override.md"
+            if override.exists() and (not override.is_file() or override.read_bytes()):
+                raise ValueError(f"Nonempty {override} takes precedence over AGENTS.md. Reconcile the override manually before installing shared rules.")
+        validate_parent(instructions)
+        if instructions.is_symlink():
+            raise ValueError(f"Refusing symlink instruction file: {instructions}")
+        if instructions.exists() and not instructions.is_file():
+            raise ValueError(f"Instruction path is not a regular file: {instructions}")
+        existing = instructions.read_bytes() if instructions.exists() else b""
+        expected = merge_rules(existing, block, instructions)
+        actions.append(("rules", instructions, expected, instructions.exists() and existing == expected))
+        for source in skills:
+            destination = skill_home / source.name
+            validate_parent(destination)
+            current = destination.is_symlink() and destination.resolve() == source
+            if (destination.exists() or destination.is_symlink()) and not current:
+                raise ValueError(f"Skill destination already belongs to another installation: {destination}")
+            actions.append(("skill", destination, source, current))
+    return actions
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--agent", required=True, choices=("codex", "claude", "all"))
+    parser.add_argument("--home", help="Use an isolated user home; ignores CODEX_HOME")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
+    mode.add_argument("--check", action="store_true", help="Exit 1 if shared instructions or skill links need updating")
+    args = parser.parse_args(argv)
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        version, block, skills = load_baseline(repo)
+        actions = plan_install(repo, args.agent, args.home, block, skills)
+        print(f"Source: {repo}\nCatalog version: {version}")
+        changes = False
+        for kind, destination, expected, current in actions:
+            if current:
+                print(f"CURRENT {destination}")
+                continue
+            changes = True
+            if args.check or args.dry_run:
+                print(f"NEEDS UPDATE {destination}")
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if kind == "rules":
+                destination.write_bytes(expected)
+            else:
+                destination.symlink_to(expected, target_is_directory=True)
+            print(f"UPDATED {destination}")
+        print("Keep the source clone on disk. Start a new agent session after installation or updates.")
+        return 1 if args.check and changes else 0
+    except (OSError, ValueError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

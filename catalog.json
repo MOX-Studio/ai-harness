@@ -1,0 +1,29 @@
+{
+  "version": "0.1.0",
+  "repository": "https://github.com/MOX-Studio/company-ai",
+  "baseline": {
+    "rules": "rules/common.md",
+    "skills": ["skills/company-sync"]
+  },
+  "projects": [
+    {
+      "id": "mox-adv",
+      "name": "MOX-ADV",
+      "instructions": "projects/mox-adv/README.md",
+      "repository": "https://github.com/MOX-Studio/MOX-ADV",
+      "knowledge": "https://app.notion.com/p/mox-studio/MOX-Space-dd7285aa22f7432fbe031f958b2b5da7"
+    }
+  ],
+  "mcp": [
+    {
+      "id": "notion",
+      "instructions": "mcp/notion.md",
+      "projects": ["mox-adv"],
+      "url": "https://mcp.notion.com/mcp",
+      "authentication": "personal-oauth",
+      "alternative": "Reuse an existing working Notion connector or notion-axi with a personal NOTION_API_TOKEN."
+    }
+  ],
+  "plugins": [],
+  "settings": []
+}
